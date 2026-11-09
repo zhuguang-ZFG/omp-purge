@@ -1,0 +1,44 @@
+name: highspecscan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: scan
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures
+          import socket
+
+          PORTS = [2375, 2376, 8888, 8265, 11434, 6443, 10250, 9090, 3000, 8006,
+                   5432, 6379, 27017, 22, 8080, 8081, 2083, 8443]
+          ips = [line.strip() for line in open("targets/highspec_ips.txt") if line.strip()]
+
+          def check(item):
+              ip, port = item
+              sock = socket.socket()
+              sock.settimeout(2)
+              try:
+                  sock.connect((ip, port))
+                  return (ip, port)
+              except Exception:
+                  return None
+              finally:
+                  sock.close()
+
+          jobs = [(ip, port) for ip in ips for port in PORTS]
+          found = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=256) as pool:
+              for res in pool.map(check, jobs):
+                  if res:
+                      found.append(res)
+          print(f"ips={len(ips)} checks={len(jobs)} open={len(found)}", flush=True)
+          for ip, port in sorted(found):
+              if port != 9100:
+                  print("OPEN", ip, port, flush=True)
+          PY

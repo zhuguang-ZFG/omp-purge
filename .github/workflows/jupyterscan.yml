@@ -1,0 +1,52 @@
+name: jupyterscan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: scan
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import concurrent.futures
+          import json
+          import socket
+
+          import requests
+
+          specs = json.load(open("targets/highspec_specs.json"))
+          ips = list(specs)
+
+          def check(ip):
+              sock = socket.socket()
+              sock.settimeout(2)
+              try:
+                  sock.connect((ip, 8888))
+              except Exception:
+                  return None
+              finally:
+                  sock.close()
+              try:
+                  r = requests.get(f"http://{ip}:8888/api", timeout=5)
+                  if r.status_code == 200 and '"version"' in r.text:
+                      return (ip, specs[ip][0], specs[ip][1], r.text[:80])
+                  return None
+              except Exception:
+                  return None
+
+          hits = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=128) as pool:
+              for res in pool.map(check, ips):
+                  if res:
+                      hits.append(res)
+                      print("JUP", res, flush=True)
+          hits.sort(key=lambda r: (r[1] or 0) * (r[2] or 0), reverse=True)
+          print("tokenless", len(hits), flush=True)
+          for row in hits[:20]:
+              print("TOP", row, flush=True)
+          PY

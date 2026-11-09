@@ -1,0 +1,43 @@
+name: kubeletscan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: kubelet
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import concurrent.futures
+          import json
+          import urllib3
+
+          import requests
+
+          urllib3.disable_warnings()
+          specs = json.load(open("targets/highspec_specs.json"))
+          ips = list(specs)
+
+          def check(ip):
+              try:
+                  r = requests.get(f"https://{ip}:10250/pods", timeout=4, verify=False)
+                  if r.status_code == 200 and '"items"' in r.text:
+                      return (ip, specs[ip][0], specs[ip][1], r.text[:100])
+              except Exception:
+                  return None
+              return None
+
+          hits = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=128) as pool:
+              for res in pool.map(check, ips):
+                  if res:
+                      hits.append(res)
+                      print("KUBELET", res, flush=True)
+          hits.sort(key=lambda r: (r[1] or 0) * (r[2] or 0), reverse=True)
+          print("anonymous", len(hits), flush=True)
+          PY

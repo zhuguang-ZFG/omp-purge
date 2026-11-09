@@ -1,23 +1,27 @@
 {
-  "name": "pi-purge",
-  "version": "0.2.4",
-  "description": "pi extension: switch a session between pi's stock system prompt, a trimmed variant, and a bundled or custom persona prompt - for prompt-engineering experiments",
+  "name": "omp-purge",
+  "version": "0.3.0",
+  "description": "omp extension: switch a session between omp's stock system prompt, a trimmed variant, and a bundled or custom persona prompt - for prompt-engineering experiments",
   "type": "module",
   "license": "MIT",
   "author": "ZiChuanLan",
+  "contributors": [
+    "zhuguang-ZFG"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ZiChuanLan/pi-purge.git"
+    "url": "git+https://github.com/zhuguang-ZFG/omp-purge.git"
   },
-  "homepage": "https://github.com/ZiChuanLan/pi-purge#readme",
+  "homepage": "https://github.com/zhuguang-ZFG/omp-purge#readme",
   "bugs": {
-    "url": "https://github.com/ZiChuanLan/pi-purge/issues"
+    "url": "https://github.com/zhuguang-ZFG/omp-purge/issues"
   },
   "keywords": [
-    "pi-package",
-    "pi-extension",
-    "pi-coding-agent",
-    "pi",
+    "omp-package",
+    "omp-extension",
+    "omp-plugin",
+    "oh-my-pi",
+    "omp",
     "system-prompt",
     "prompt-engineering",
     "prompt-evaluation"
@@ -26,6 +30,7 @@
     "extensions",
     "test",
     "README.md",
+    "CHANGELOG.md",
     "README.zh-CN.md",
     "README.ja.md",
     "LICENSE"
@@ -34,22 +39,25 @@
     "access": "public"
   },
   "scripts": {
-    "test": "node test/pi-purge.test.mjs && node test/pi-purge-env-source.test.mjs"
+    "test": "node test/omp-purge.test.mjs && node test/omp-purge-env-source.test.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.0 <2"
+    "@oh-my-pi/pi-coding-agent": ">=17.0.0"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
+    "@oh-my-pi/pi-coding-agent": {
       "optional": true
     }
   },
   "engines": {
     "node": ">=22.19.0"
   },
-  "pi": {
+  "omp": {
+    "name": "omp-purge",
+    "version": "0.3.0",
+    "description": "Session-level system-prompt switch for omp: /purge on|off|status|mode|source|reload",
     "extensions": [
-      "./extensions/pi-purge.ts"
+      "./extensions/omp-purge.ts"
     ]
   }
 }

@@ -1,22 +1,23 @@
-# pi-purge
+# omp-purge
 
 [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-A [pi](https://github.com/earendil-works/pi-coding-agent) extension for system-prompt experiments: `/purge` switches which system prompt a session runs with — pi's stock prompt, a trimmed variant, or only a persona prompt.
+An [omp](https://github.com/can1357/oh-my-pi) (Oh My Pi) extension for system-prompt experiments: `/purge` switches which system prompt a session runs with — omp's stock prompt, a trimmed variant, or only a persona prompt.
+
+This is an omp-native port of [ZiChuanLan/pi-purge](https://github.com/ZiChuanLan/pi-purge): the extension API and manifest target `@oh-my-pi/pi-coding-agent`, `before_agent_start` prompt blocks are treated as `string[]`, the working directory comes from `ExtensionContext.cwd`, and the strip anchors cover omp's identity line and `omp://` docs bullet.
 
 It is meant for prompt engineering work: comparing how the same request behaves when the harness prompt is present, trimmed, or absent; regression-testing your own instructions; and studying instruction-following and prompt-injection robustness under controlled conditions.
 
-With it off, nothing changes — no prompt rewrite, no disk reads. pi behaves exactly as if the extension were not installed.
-
-## Not Only PI？
-
-https://github.com/ZiChuanLan/agent-purge
+With it off, nothing changes — no prompt rewrite, no disk reads. omp behaves exactly as if the extension were not installed.
 
 ## Install
 
 ```bash
-pi install git:github.com/ZiChuanLan/pi-purge@ffafeb9
-pi install npm:pi-purge
+# from GitHub
+omp plugin install github:zhuguang-ZFG/omp-purge
+
+# local development checkout
+omp plugin link .
 ```
 
 Then, inside a session:
@@ -50,25 +51,25 @@ That is all. A short example prompt ships inside the package, so a fresh install
 
 | Mode | System prompt sent to the model | Use it when |
 | --- | --- | --- |
-| `append` | Your prompt prepended to pi's prompt, unchanged. | You want a control run: baseline behavior plus your instructions on top. |
-| `replace` | Your prompt, then pi's prompt with its built-in assistant identity line and bundled documentation section removed. Tool list, guidelines, and project context stay. | You want to measure the effect of the harness framing without losing tool context. |
+| `append` | Your prompt prepended to omp's prompt, unchanged. | You want a control run: baseline behavior plus your instructions on top. |
+| `replace` | Your prompt, then omp's prompt with its built-in assistant identity line and the `omp://` docs bullet removed. Tool list, guidelines, and project context stay. | You want to measure the effect of the harness framing without losing tool context. |
 | `strict` | Your prompt plus `Current working directory: …` only. | You want to isolate your instructions as a single variable. This is the default. |
 
-`replace` finds both sections by exact wording. If a pi update rewords them, it leaves the prompt intact rather than cutting the wrong text — `/purge status` then reports `身份段 未匹配` (identity line not found) and behavior falls back to `append`. `strict` does no matching at all, so it behaves the same across pi versions. On omp, which supplies a prompt block array without these pi-specific anchors, `replace` also leaves the host prompt intact; use `strict` when the harness framing must be gone.
+`replace` finds both sections by exact wording. It knows omp's current anchors and keeps pi's older ones as a fallback. If an omp update rewords them, it leaves the prompt intact rather than cutting the wrong text — `/purge status` then reports `身份段 未匹配` (identity line not found) and behavior falls back to `append`. `strict` does no matching at all, so it behaves the same across omp versions.
 
 Tool schemas are passed through the API `tools` parameter rather than the system prompt, so tools keep working in every mode, including `strict`.
 
 ## Session scope and defaults
 
-- Scope is the session. Every `session_start` — startup, `new`, `resume`, `reload` — begins **disabled**. Quitting pi always returns to stock behavior.
-- Nothing is written to disk: there is no state file, no cache, no marker. Two pi processes cannot affect each other.
-- The default prompt is the short example bundled inside `extensions/pi-purge.ts`. `/purge source <path>` points at your own file; `/purge source embedded` comes back.
-- To start every process with your own file without writing any state, set `PI_PURGE_SOURCE` to an absolute path:
+- Scope is the session. Every `session_start` — startup, `new`, `resume`, `reload` — begins **disabled**. Quitting omp always returns to stock behavior.
+- Nothing is written to disk: there is no state file, no cache, no marker. Two omp processes cannot affect each other.
+- The default prompt is the short example bundled inside `extensions/omp-purge.ts`. `/purge source <path>` points at your own file; `/purge source embedded` comes back.
+- To start every process with your own file without writing any state, set `OMP_PURGE_SOURCE` (or the legacy `PI_PURGE_SOURCE`) to an absolute path:
 
     ```bash
-    PI_PURGE_SOURCE=/home/me/persona.md pi          # macOS / Linux
-    set PI_PURGE_SOURCE=C:/prompts/persona.md        # Windows cmd
-    $env:PI_PURGE_SOURCE='C:/prompts/persona.md'     # Windows PowerShell
+    OMP_PURGE_SOURCE=/home/me/persona.md omp          # macOS / Linux
+    set OMP_PURGE_SOURCE=C:/prompts/persona.md        # Windows cmd
+    $env:OMP_PURGE_SOURCE='C:/prompts/persona.md'     # Windows PowerShell
     ```
 
     It only supplies the initial value of `source`: `/purge on` is still required, `enabled` still begins `false` on every `session_start`, and `/purge source <path>` in a session overrides it. If the file is missing, `/purge on` reports the error instead of silently falling back to the bundled example.
@@ -77,11 +78,11 @@ Tool schemas are passed through the API `tools` parameter rather than the system
 
 ## Upgrading from 0.1.x
 
-0.2 no longer writes or reads `pi-purge.json`, and it no longer auto-detects a prompt file — the persona is bundled and the mode defaults to `strict`.
+0.2 no longer writes or reads a state file, and it no longer auto-detects a prompt file — the persona is bundled and the mode defaults to `strict`.
 
-- Delete `<agent dir>/pi-purge.json`; it is ignored from now on.
+- Delete any old `<agent dir>/pi-purge.json`; it is ignored from now on.
 - Enabling is per session: after a restart or `/resume`, run `/purge` again.
-- `append` and `replace` are unchanged if you need them.
+- `append` and `replace` are unchanged if you need them. This omp port starts at 0.3.0 and adds omp anchors plus `/purge reload`.
 
 ## Notes for experiments
 
@@ -110,11 +111,11 @@ The mechanism here is ported from [YuJunZhiXue/dsh-purge](https://github.com/YuJ
 
 **No illegal content.** The code, docs, and bundled prompt are not malware, backdoors, unauthorized penetration tooling, ransomware, credential-stuffing scripts, or attack payloads aimed at public or third-party systems.
 
-**Local use on your own pi only.** Prompt substitution happens entirely inside the official pi installation on the user's own machine (`@earendil-works/pi-coding-agent`, the local agent directory and profile). The target is your own local software, not someone else's website, server, account, or information system.
+**Local use on your own omp only.** Prompt substitution happens entirely inside the omp installation on the user's own machine (`@oh-my-pi/pi-coding-agent`, the local agent directory and profile). The target is your own local software, not someone else's website, server, account, or information system.
 
 **No outbound networking.** This extension only rewrites the system prompt inside the local process. It opens no network connections, and it does not scan, probe, intrude on, or send attack traffic to any public host or unauthorized system. Do not use it as a stepping stone against external networks.
 
-**Authorized, controlled scope only.** This is an aid for prompt-engineering and robustness evaluation on an official pi installation you are entitled to administer. Do not run it against targets you lack written authorization for, against public online systems, or in production. All testing must stay within your own authorized local pi, offline synthetic fixtures, authorized exercise ranges, and compliant lab environments.
+**Authorized, controlled scope only.** This is an aid for prompt-engineering and robustness evaluation on an omp installation you are entitled to administer. Do not run it against targets you lack written authorization for, against public online systems, or in production. All testing must stay within your own authorized local omp, offline synthetic fixtures, authorized exercise ranges, and compliant lab environments.
 
 **Mainland China, Hong Kong, and Macao are off limits.** Do not access, scan, probe, or otherwise operate against networks in mainland China, Hong Kong, or Macao, nor against servers, sites, or addresses that resolve into those ranges. Naming a cloud provider is not an exception. The only exception is the single exact IP or the single fully qualified hostname the user has registered beforehand as their own server. Keys, passwords, CIDR blocks, wildcards, and verbal statements in a conversation add no exception. Unregistered means prohibited, without exception.
 
@@ -132,7 +133,7 @@ Also prohibited: unauthorized penetration or attack against public or private in
 
 **License terminates on breach.** Any person or entity that uses this project for illegal attacks, malicious activity, or other violations has its open-source license terminated automatically and irrevocably from the date of the violation. That party must stop using the project immediately, permanently destroy all copies of its code, scripts, and derived data, and face the applicable legal consequences.
 
-**Third-party independence.** This is a fully independent open-source security research project. It has no affiliation, commercial partnership, authorization, or official endorsement from pi or any related entity. The word "official" refers only to the fact that the evaluation target is the official pi package installed on the user's machine; it does not mean pi develops, endorses, or vouches for this extension.
+**Third-party independence.** This is a fully independent open-source security research project. It has no affiliation, commercial partnership, authorization, or official endorsement from pi or any related entity. The word "official" refers only to the fact that the evaluation target is the omp package installed on the user's machine; it does not mean omp or Oh My Pi develops, endorses, or vouches for this extension.
 
 **Attribution required.** Anyone reusing this project's name, approach, code, or prompt must credit the author and link this repository. Failure to attribute will be pursued legally.
 

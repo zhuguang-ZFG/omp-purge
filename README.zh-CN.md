@@ -1,8 +1,10 @@
-# pi-purge
+# omp-purge
 
 [English](README.md) | 中文 | [日本語](README.ja.md)
 
-[pi](https://github.com/earendil-works/pi-coding-agent) 的系统提示词实验扩展：`/purge` 用来切换一轮会话到底带哪套系统提示词 —— pi 自带的、精简过的，或者只发一份人设提示词。
+[omp](https://github.com/can1357/oh-my-pi)（Oh My Pi）的系统提示词实验扩展：`/purge` 用来切换一轮会话到底带哪套系统提示词 —— omp 自带的、精简过的，或者只发一份人设提示词。
+
+本项目是 [ZiChuanLan/pi-purge](https://github.com/ZiChuanLan/pi-purge) 的 omp 原生移植：扩展 API 与包清单指向 `@oh-my-pi/pi-coding-agent`，`before_agent_start` 的提示词块按 `string[]` 处理，工作目录取自 `ExtensionContext.cwd`，切除锚点覆盖 omp 的宿主身份句与 `omp://` 文档 bullet。
 
 它的用途是提示词工程：同一句请求在「宿主提示词完整 / 精简 / 缺失」三种条件下的行为差异；自己写的指令做回归测试；以及指令遵循、提示词注入鲁棒性这类受控实验。
 
@@ -14,8 +16,11 @@ https://github.com/ZiChuanLan/agent-purge
 ## 安装
 
 ```bash
-完整带提示词： pi install git:github.com/ZiChuanLan/pi-purge@ffafeb9
-自定义提示词： pi install npm:pi-purge
+# 从 GitHub 安装
+omp plugin install github:zhuguang-ZFG/omp-purge
+
+# 本地开发目录
+omp plugin link .
 ```
 
 然后在会话里：
@@ -49,25 +54,25 @@ https://github.com/ZiChuanLan/agent-purge
 
 | 模式 | 实际发给模型的系统提示词 | 适用场景 |
 | --- | --- | --- |
-| `append` | 你的提示词 + pi 原提示词（一字不改） | 对照组：基线行为，加一层自己的指令 |
-| `replace` | 你的提示词 + 去掉「助手身份句」和「内置文档段」的 pi 提示词，工具列表 / Guidelines / 项目上下文保留 | 想测量宿主框架措辞的影响，又不想丢工具上下文 |
+| `append` | 你的提示词 + omp 原提示词（一字不改） | 对照组：基线行为，加一层自己的指令 |
+| `replace` | 你的提示词 + 去掉「助手身份句」和 `omp://` 文档 bullet 的 omp 提示词，工具列表 / Guidelines / 项目上下文保留 | 想测量宿主框架措辞的影响，又不想丢工具上下文 |
 | `strict` | 你的提示词 + 仅 `Current working directory: …` | 想把人设/指令当成唯一变量隔离出来。这是默认模式 |
 
-`replace` 依赖固定文案定位那两段。pi 升级改措辞时它会原样保留提示词（退化成 `append`），而不是切错位置 —— `/purge status` 会显示 `身份段 未匹配`。`strict` 不做任何匹配，跨 pi 版本行为一致。omp 传的是提示词块数组，没有这些 pi 专用锚点，`replace` 同样会退化成 `append`；要彻底丢掉宿主框架用 `strict`。
+`replace` 依赖固定文案定位那两段：优先 omp 现行锚点，同时保留 pi 旧文案作为回退。omp 升级改措辞时它会原样保留提示词（退化成 `append`），而不是切错位置 —— `/purge status` 会显示 `身份段 未匹配`。`strict` 不做任何匹配，跨 omp 版本行为一致。要彻底丢掉宿主框架用 `strict`。
 
 工具 schema 走 API 的 `tools` 参数，不依赖系统提示词，所以三种模式下工具都正常可用，包括 `strict`。
 
 ## 会话范围与默认值
 
-- 作用范围是**会话**。每次 `session_start`（启动 / 新建 / `resume` / 重载）都从**关闭**开始；退出 pi 一定回到原始提示词。
-- **不写任何文件**：没有状态文件、没有缓存、没有标记。两个 pi 进程互不影响。
-- 默认提示词是 `extensions/pi-purge.ts` 里的一小段示例；`/purge source <路径>` 换成自己的文件，`/purge source embedded` 切回来。
-- 想不落盘就让每次启动都指向自己的文件，把 `PI_PURGE_SOURCE` 设成绝对路径：
+- 作用范围是**会话**。每次 `session_start`（启动 / 新建 / `resume` / 重载）都从**关闭**开始；退出 omp 一定回到原始提示词。
+- **不写任何文件**：没有状态文件、没有缓存、没有标记。两个 omp 进程互不影响。
+- 默认提示词是 `extensions/omp-purge.ts` 里的一小段示例；`/purge source <路径>` 换成自己的文件，`/purge source embedded` 切回来。
+- 想不落盘就让每次启动都指向自己的文件，把 `OMP_PURGE_SOURCE`（兼容旧名 `PI_PURGE_SOURCE`）设成绝对路径：
 
     ```bash
-    PI_PURGE_SOURCE=/home/me/persona.md pi          # macOS / Linux
-    set PI_PURGE_SOURCE=C:/prompts/persona.md        # Windows cmd
-    $env:PI_PURGE_SOURCE='C:/prompts/persona.md'     # Windows PowerShell
+    OMP_PURGE_SOURCE=/home/me/persona.md omp          # macOS / Linux
+    set OMP_PURGE_SOURCE=C:/prompts/persona.md        # Windows cmd
+    $env:OMP_PURGE_SOURCE='C:/prompts/persona.md'     # Windows PowerShell
     ```
 
     它只提供 `source` 的初始值：仍然要 `/purge on`，每次 `session_start` 的 `enabled` 仍然是 `false`，会话里的 `/purge source <路径>` 也仍然优先。文件不存在时 `/purge on` 会报错，而不是静默回退到内嵌示例。
@@ -78,9 +83,9 @@ https://github.com/ZiChuanLan/agent-purge
 
 0.2 不再读写 `pi-purge.json`，也不再自动探测提示词文件 —— 人设内置，模式默认 `strict`。
 
-- 删掉 `<agent dir>/pi-purge.json`，它已经不被读取。
+- 删掉旧的 `<agent dir>/pi-purge.json`，它已经不被读取。
 - 开启是会话级的：重启或 `/resume` 之后需要重新 `/purge`。
-- 需要时 `append` / `replace` 的行为与之前一致。
+- 需要时 `append` / `replace` 的行为与之前一致；omp 移植版从 0.3.0 起额外提供 omp 锚点与 `/purge reload`。
 
 ## 做实验时的注意点
 

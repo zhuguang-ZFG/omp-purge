@@ -1,30 +1,37 @@
 /**
- * pi-purge — 会话级破限开关（自带人设，零外部文件依赖）
+ * omp-purge — 会话级系统提示词开关（omp 原生移植版）
  *
- * 机制移植自 dsh-purge：宿主身份段不是被压住，而是被**清掉**。
- *  dsh：includeHarnessIdentity -> false、personaPrefix/Suffix -> ""，人设挂头部。
- *  pi ：strict 模式整段丢弃宿主提示词，只发人设 + 工作目录。
+ * 移植自 ZiChuanLan/pi-purge（机制又源自 dsh-purge）：
+ * 宿主身份段不是被压住，而是被**清掉**。strict 模式整段丢弃宿主提示词，
+ * 只发人设 + 工作目录；replace 模式只切身份句与宿主文档段。
  *
- * 三个设计约束：
- *  1. 默认不启用 —— 不输入 /purge，pi 与未安装本扩展时完全一致。
+ * 相对 pi-purge 的 omp 适配：
+ *  1. 类型来自 @oh-my-pi/pi-coding-agent，包清单用 omp.extensions；
+ *  2. before_agent_start 的 systemPrompt 是 string[]，按块拼接后处理，返回 string[]；
+ *  3. cwd 优先取 ExtensionContext.cwd（omp 事件不带 systemPromptOptions）；
+ *  4. 新增 omp 宿主身份句与 `omp://` 文档段的切除锚点，同时保留 pi 旧锚点；
+ *  5. 补齐 README 承诺的 /purge reload。
+ *
+ * 三个设计约束（与上游一致）：
+ *  1. 默认不启用 —— 不输入 /purge，omp 与未安装本扩展时完全一致。
  *  2. 会话级独立 —— 状态只在内存里，每次 session_start 归零，退出即失，不落盘。
  *  3. 自带人设 —— 默认用内嵌正文；/purge source <路径> 可换成本地文件。
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 /** 内嵌的示例提示词（默认源）。真用时用 `/purge source <路径>` 换掉。 */
 const EMBEDDED_PERSONA = [
 	"# Persona (example)",
 	"",
-	"You are a helpful assistant running inside pi. Answer the user's request directly",
+	"You are a helpful assistant running inside omp. Answer the user's request directly",
 	"and keep responses concise.",
 	"",
-	"This text is only a placeholder bundled with pi-purge, so that a fresh install",
+	"This text is only a placeholder bundled with omp-purge, so that a fresh install",
 	"works immediately: /purge swaps the system prompt for this text plus the working",
-	"directory, and /purge off restores pi's own prompt.",
+	"directory, and /purge off restores omp's own prompt.",
 	"",
 	"To run your own instructions instead:",
 	"",
@@ -36,17 +43,17 @@ const EMBEDDED_PERSONA = [
 /** 内嵌源的标识值；也可 `/purge source embedded` 切回来。 */
 const EMBEDDED = "embedded";
 /** 常见的外部人设位置，仅在用户显式切换时使用。 */
-const HINT_SOURCE = join(homedir(), ".dsh", "prompt-inject.md");
+const HINT_SOURCE = join(homedir(), ".omp", "agent", "prompt-inject.md");
 
 /**
- * 默认源的初始值：由 PI_PURGE_SOURCE 显式指定绝对路径，未设置时保持内嵌示例。
- * 只读一次、不落盘、不自动探测；进程内的 `/purge source` 仍然覆盖它。
+ * 默认源的初始值：由 OMP_PURGE_SOURCE 显式指定绝对路径，未设置时保持内嵌示例。
+ * 兼容旧变量名 PI_PURGE_SOURCE。只读一次、不落盘、不自动探测。
  */
-const ENV_SOURCE = process.env.PI_PURGE_SOURCE?.trim() || "";
+const ENV_SOURCE = (process.env.OMP_PURGE_SOURCE ?? process.env.PI_PURGE_SOURCE ?? "").trim();
 
 type Mode = "strict" | "replace" | "append";
 
-// 会话级状态：只活在内存里，pi 退出即失，绝不跨会话 / 跨进程泄漏
+// 会话级状态：只活在内存里，omp 退出即失，绝不跨会话 / 跨进程泄漏
 let enabled = false;
 let mode: Mode = "strict";
 let source = ENV_SOURCE || EMBEDDED;
@@ -55,24 +62,42 @@ let loadError = "";
 // 上一轮实际切除情况，/purge status 用它回答"到底生效了没有"
 let lastCut = { identity: false, docs: false, at: 0 };
 
-/** pi 默认提示词里的宿主身份句（dist/core/system-prompt.js 模板首句）。 */
-const HOST_IDENTITY = "You are an expert coding assistant operating inside pi, a coding agent harness.";
-/** pi 文档段的起点与终点标记；任一处匹配不到就整段跳过，绝不猜边界。 */
-const HOST_DOCS_START = "Pi documentation (read only when the user asks about pi itself";
-const HOST_DOCS_END = "(e.g., tui.md for TUI API details)";
+/**
+ * 宿主身份句。omp 在前，pi 旧文案保留：同一份代码在两种宿主上都能切。
+ * 匹配不到就原样保留，绝不猜边界。
+ */
+const HOST_IDENTITIES = [
+	"You are a helpful assistant the team trusts with load-bearing changes, operating in the Oh My Pi coding harness.",
+	"You are an expert coding assistant operating inside pi, a coding agent harness.",
+];
+
+/** omp 的宿主文档入口（单行 bullet，位于 # Internal URLs）。 */
+const OMP_DOCS_BULLET = "- `omp://`: harness docs";
+/** pi 的宿主文档段起止标记。 */
+const PI_DOCS_START = "Pi documentation (read only when the user asks about pi itself";
+const PI_DOCS_END = "(e.g., tui.md for TUI API details)";
 
 /**
- * pi 的 before_agent_start 给 string，omp 给 string[]；统一成一块文本。
- * 直接拼接数组会走 Array.toString()，把每段之间变成逗号。
+ * omp 的 before_agent_start 给 string[]；pi 给 string。
+ * 统一成一块文本。直接拼接数组会走 Array.toString()，把每段之间变成逗号。
  */
 function systemText(value: unknown): string {
-	if (Array.isArray(value)) return value.filter((block): block is string => typeof block === "string").join("\n\n");
+	if (Array.isArray(value))
+		return value.filter((block): block is string => typeof block === "string").join("\n\n");
 	return typeof value === "string" ? value : "";
 }
 
+/** 删除包含 index 的整行（含行尾换行）。 */
+function cutLine(text: string, index: number): string {
+	const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+	const lineEnd = text.indexOf("\n", index);
+	if (lineEnd === -1) return text.slice(0, lineStart);
+	return text.slice(0, lineStart) + text.slice(lineEnd + 1);
+}
+
 /**
- * 从系统提示词里切掉宿主身份句和 pi 文档段。
- * 两处都用固定文案定位，匹配不到就原样返回 —— pi 升级改文案时退化为 append，
+ * 从系统提示词里切掉宿主身份句和宿主文档段。
+ * 全部用固定文案定位，匹配不到就原样返回 —— 宿主升级改文案时退化为 append，
  * 而不是把整段提示词切坏。
  */
 function stripHostPersona(systemPrompt: string): { text: string; identity: boolean; docs: boolean } {
@@ -80,17 +105,25 @@ function stripHostPersona(systemPrompt: string): { text: string; identity: boole
 	let identity = false;
 	let docs = false;
 
-	const identityAt = text.indexOf(HOST_IDENTITY);
-	if (identityAt !== -1) {
-		const lineEnd = text.indexOf("\n", identityAt);
-		const cutEnd = lineEnd === -1 ? text.length : lineEnd + 1;
-		text = text.slice(0, identityAt) + text.slice(cutEnd);
-		identity = true;
+	for (const identityText of HOST_IDENTITIES) {
+		const at = text.indexOf(identityText);
+		if (at !== -1) {
+			text = cutLine(text, at);
+			identity = true;
+		}
 	}
 
-	const docsAt = text.indexOf(HOST_DOCS_START);
+	// omp：单行 `omp://` 文档 bullet
+	const bulletAt = text.indexOf(OMP_DOCS_BULLET);
+	if (bulletAt !== -1) {
+		text = cutLine(text, bulletAt);
+		docs = true;
+	}
+
+	// pi：整段宿主文档
+	const docsAt = text.indexOf(PI_DOCS_START);
 	if (docsAt !== -1) {
-		const docsEndAt = text.indexOf(HOST_DOCS_END, docsAt + HOST_DOCS_START.length);
+		const docsEndAt = text.indexOf(PI_DOCS_END, docsAt + PI_DOCS_START.length);
 		if (docsEndAt !== -1) {
 			let start = docsAt;
 			while (start > 0 && text[start - 1] === "\n") start -= 1;
@@ -104,7 +137,7 @@ function stripHostPersona(systemPrompt: string): { text: string; identity: boole
 	return { text, identity, docs };
 }
 
-export default function piPurge(pi: ExtensionAPI) {
+export default function ompPurge(pi: ExtensionAPI) {
 	const reload = (): boolean => {
 		if (source === EMBEDDED) {
 			body = EMBEDDED_PERSONA;
@@ -128,7 +161,7 @@ export default function piPurge(pi: ExtensionAPI) {
 	const paint = (ctx: { ui?: { setStatus?: (key: string, text?: string) => void } }) => {
 		// -p / --mode json 没有 footer，setStatus 不能把会话搞挂
 		try {
-			ctx.ui?.setStatus?.("pi-purge", enabled ? "PURGE ON" : undefined);
+			ctx.ui?.setStatus?.("omp-purge", enabled ? "PURGE ON" : undefined);
 		} catch {
 			/* 非交互模式忽略 */
 		}
@@ -142,7 +175,7 @@ export default function piPurge(pi: ExtensionAPI) {
 		paint(ctx);
 	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		if (!enabled || body.length === 0) return;
 
 		const hostText = systemText(event.systemPrompt);
@@ -150,23 +183,29 @@ export default function piPurge(pi: ExtensionAPI) {
 		if (mode === "strict") {
 			// 等价 dsh 的 strict baseline：宿主提示词整段丢掉，只留工作目录。
 			// 工具 schema 走 API 的 tools 参数，不依赖这段文字。
-			// omp 的事件不带 systemPromptOptions，用进程 cwd 兜底。
-			const cwd = event.systemPromptOptions?.cwd ?? process.cwd();
-			host = cwd ? `Current working directory: ${String(cwd).replace(/\\/g, "/")}` : "";
+			const cwd = ctx?.cwd ?? process.cwd();
 			const cut = stripHostPersona(hostText);
 			lastCut = { identity: cut.identity, docs: cut.docs, at: Date.now() };
-		} else if (mode === "replace") {
+			return {
+				systemPrompt: [
+					[body, cwd ? `Current working directory: ${String(cwd).replace(/\\/g, "/")}` : ""]
+						.filter(Boolean)
+						.join("\n\n"),
+				],
+			};
+		}
+		if (mode === "replace") {
 			const cut = stripHostPersona(host);
 			host = cut.text;
 			lastCut = { identity: cut.identity, docs: cut.docs, at: Date.now() };
 		}
-		return { systemPrompt: host.length > 0 ? `${body}\n\n${host}` : body };
+		return { systemPrompt: [host.length > 0 ? `${body}\n\n${host}` : body] };
 	});
 
 	pi.registerCommand("purge", {
-		description: "会话级破限开关：清掉宿主身份段并把人设挂到系统提示词头部",
+		description: "会话级提示词开关：清掉宿主身份段并把人设挂到系统提示词头部（omp）",
 		getArgumentCompletions: (prefix: string) =>
-			["on", "off", "status", "mode", "source"]
+			["on", "off", "status", "mode", "source", "reload"]
 				.filter((value) => value.startsWith(prefix))
 				.map((value) => ({ value, label: value })),
 		handler: async (args: string, ctx) => {
@@ -182,9 +221,13 @@ export default function piPurge(pi: ExtensionAPI) {
 				const cut =
 					lastCut.at === 0
 						? "尚未运行过一轮"
-						: `身份段 ${lastCut.identity ? "已切除" : "未匹配"} / pi 文档段 ${lastCut.docs ? "已切除" : "未匹配"}`;
+						: `身份段 ${lastCut.identity ? "已切除" : "未匹配"} / 宿主文档段 ${lastCut.docs ? "已切除" : "未匹配"}`;
 				const modeLabel =
-					mode === "strict" ? "strict（只留人设+工作目录）" : mode === "replace" ? "replace（清宿主身份段）" : "append（只挂头部）";
+					mode === "strict"
+						? "strict（只留人设+工作目录）"
+						: mode === "replace"
+							? "replace（清宿主身份段）"
+							: "append（只挂头部）";
 				return [
 					`状态: ${enabled ? "开启" : "关闭"}（仅本会话）`,
 					`模式: ${modeLabel}`,
@@ -203,7 +246,7 @@ export default function piPurge(pi: ExtensionAPI) {
 			const turnOff = () => {
 				enabled = false;
 				paint(ctx);
-				notify("已关闭，恢复 pi 原始系统提示词。");
+				notify("已关闭，恢复 omp 原始系统提示词。");
 			};
 
 			switch (cmd) {
@@ -219,11 +262,15 @@ export default function piPurge(pi: ExtensionAPI) {
 					return turnOff();
 				case "status":
 					return notify(describe());
+				case "reload": {
+					if (!reload()) return notify(`重新读取失败：${loadError}`, "error");
+					return notify(`人设已重新读取，正文 ${body.length} 字符。\n${describe()}`);
+				}
 				case "mode": {
 					const wanted = arg.toLowerCase();
 					if (wanted !== "strict" && wanted !== "replace" && wanted !== "append") {
 						return notify(
-							`当前模式: ${mode}\n用法: /purge mode strict|replace|append\nstrict  = 只发人设 + 工作目录（破限最彻底）\nreplace = 清 pi 身份段与文档段\nappend  = 只把人设挂头部`,
+							`当前模式: ${mode}\n用法: /purge mode strict|replace|append\nstrict  = 只发人设 + 工作目录（隔离最彻底）\nreplace = 清 omp 身份句与 omp:// 文档段\nappend  = 只把人设挂头部`,
 							"error",
 						);
 					}
@@ -250,7 +297,7 @@ export default function piPurge(pi: ExtensionAPI) {
 					return notify(`人设已切换，正文 ${body.length} 字符。\n${describe()}`);
 				}
 				default:
-					return notify(`未知子命令: ${cmd}\n用法: /purge [on|off|status|mode|source]`);
+					return notify(`未知子命令: ${cmd}\n用法: /purge [on|off|status|mode|source|reload]`);
 			}
 		},
 	});

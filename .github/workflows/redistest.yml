@@ -1,0 +1,46 @@
+name: redistest
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: redis
+        run: |
+          python3 - <<'PY'
+          import socket
+
+          HOSTS = ["138.197.195.68", "138.197.237.120", "35.160.213.189"]
+
+          def cmd(host, *args):
+              payload = f"*{len(args)}\r\n" + "".join(f"${len(a)}\r\n{a}\r\n" for a in args)
+              sock = socket.socket()
+              sock.settimeout(6)
+              try:
+                  sock.connect((host, 6379))
+                  sock.sendall(payload.encode())
+                  data = b""
+                  while True:
+                      chunk = sock.recv(65536)
+                      if not chunk:
+                          break
+                      data += chunk
+                      if len(chunk) < 65536:
+                          break
+                  return data[:600].decode("utf-8", "replace")
+              except Exception as exc:
+                  return f"ERR {type(exc).__name__}"
+              finally:
+                  sock.close()
+
+          for host in HOSTS:
+              print("==", host, flush=True)
+              print("PING", repr(cmd(host, "PING")), flush=True)
+              print("INFO", repr(cmd(host, "INFO", "server")[:300]), flush=True)
+              print("DIR", repr(cmd(host, "CONFIG", "GET", "dir")), flush=True)
+              print("DB", repr(cmd(host, "CONFIG", "GET", "dbfilename")), flush=True)
+          PY
